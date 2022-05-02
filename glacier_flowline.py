@@ -224,7 +224,7 @@ class GlacierFlowline(object):
         #import pdb;pdb.set_trace()
         sliding_vel_not_stagged = 0.5 * (self.at_link['sliding_vel'][1:] + self.at_link['sliding_vel'][:-1])
         
-        self.at_node['topg'][1:-1] -= dt * np.power(sliding_vel_not_stagged * self.secperyr, self.erosion_l) * self.erosion_k
+        self.at_node['topg'][1:-1] -= dt * np.power(np.abs(sliding_vel_not_stagged) * self.secperyr, self.erosion_l) * self.erosion_k
         self.at_node['topg'][self.at_node['thk'] > 1e-3] += dt * self.uplift_rate # only change elevation under ice
         self.at_node['surf'] = self.at_node['topg'] + self.at_node['thk']
         
