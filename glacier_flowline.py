@@ -229,10 +229,19 @@ class GlacierFlowline(object):
         self.at_node['surf'] = self.at_node['topg'] + self.at_node['thk']
         
     def check_stability(self):
-        for i in np.flip(self.core_nodes)[:-1]:
-            if (self.at_node['topg'][i-1] - self.at_node['topg'][i])/self.dx > math.tan(self.slope_threshold/180*math.pi): # tan 30
+        # JL on 2022/05/02 to JL 3 years ago: I'm really confused by the loop order here.
+        # so I changed it
+
+        # from right to left
+        for i in self.core_nodes:
+            if (self.at_node['topg'][i+1] - self.at_node['topg'][i])/self.dx > math.tan(self.slope_threshold/180*math.pi):
+                self.at_node['topg'][i+1] = math.tan(self.slope_threshold/180*math.pi)*self.dx + self.at_node['topg'][i]
+
+        # from left to right
+        for i in self.core_nodes[::-1]:
+            if (self.at_node['topg'][i-1] - self.at_node['topg'][i])/self.dx > math.tan(self.slope_threshold/180*math.pi):
                 self.at_node['topg'][i-1] = math.tan(self.slope_threshold/180*math.pi)*self.dx + self.at_node['topg'][i]
-            
+
         self.at_node['surf'] = self.at_node['topg'] + self.at_node['thk']
         
     def run_one_step(self, dt, sliding='traditional', erosion=False):
