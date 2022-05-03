@@ -231,7 +231,21 @@ class GlacierFlowline(object):
     def check_stability(self):
         # JL on 2022/05/02 to JL 3 years ago: I'm really confused by the loop order here.
         # so I changed it
+        
+        # prevent the glacier from digging a deep hole
+        # from right to left
+        for i in self.core_nodes:
+            if (self.at_node['surf'][i] <= self.at_node['surf'][i+1]):
+                if (self.at_node['topg'][i] - self.at_node['topg'][i+1])/self.dx > math.tan(self.slope_threshold/180*math.pi):
+                    self.at_node['topg'][i+1] = self.at_node['topg'][i] - math.tan(self.slope_threshold/180*math.pi)*self.dx
+                
+        # from left to right
+        for i in self.core_nodes[::-1]:
+            if (self.at_node['surf'][i] <= self.at_node['surf'][i-1]):
+                if (self.at_node['topg'][i] - self.at_node['topg'][i-1])/self.dx > math.tan(self.slope_threshold/180*math.pi):
+                    self.at_node['topg'][i-1] = self.at_node['topg'][i] - math.tan(self.slope_threshold/180*math.pi)*self.dx
 
+        # prevent over steepened slope
         # from right to left
         for i in self.core_nodes:
             if (self.at_node['topg'][i+1] - self.at_node['topg'][i])/self.dx > math.tan(self.slope_threshold/180*math.pi):
