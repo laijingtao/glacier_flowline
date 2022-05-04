@@ -208,7 +208,15 @@ class GlacierFlowline(object):
         flux_div = np.zeros(self.nx+2*self.n_ghost)
         flux_div[1:-1] = (flux[1:] - flux[:-1]) / self.dx
         flux_div[self.n_ghost] = (flux[self.n_ghost] - self.flux_in) / self.dx  # left boundary
-        self.at_node['thk'] = self.at_node['thk'] + dt * self.secperyr * (self.at_node['mb'] - flux_div)
+
+        # update based on flux
+        self.at_node['thk'] = self.at_node['thk'] + dt * self.secperyr * (0 - flux_div)
+
+        if len(self.at_node['thk'][self.at_node['thk'] < 0]) > 0:
+            print("Warning: negative thickness value possibility due to large dt!")
+
+        # update mass balance
+        self.at_node['thk'] = self.at_node['thk'] + dt * self.secperyr * self.at_node['mb']
         
         self.at_node['thk'][np.where(self.at_node['thk'] <= 0)] = 1e-9 # avoid negative thk and avoid divding by zero
         
