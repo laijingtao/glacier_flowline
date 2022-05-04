@@ -76,6 +76,8 @@ class GlacierFlowline(object):
             self.ela = 1500
             
         self.at_node['eff_pres'] = np.zeros(self.num_of_nodes)
+
+        self.large_dt_warning = False
         
         self.model_state = None
         self.update_model_state()
@@ -196,7 +198,6 @@ class GlacierFlowline(object):
         self.at_link['sliding_vel'] *= self.sliding_e
     
     def update_thk(self, dt, sliding='traditional'):
-        self.comp_mass_balance()
         self.comp_deformation_velocity()
         if sliding == 'traditional':
             self.comp_sliding_velocity()
@@ -213,7 +214,8 @@ class GlacierFlowline(object):
         self.at_node['thk'] = self.at_node['thk'] + dt * self.secperyr * (0 - flux_div)
 
         if len(self.at_node['thk'][self.at_node['thk'] < 0]) > 0:
-            print("Warning: negative thickness value possibility due to large dt!")
+            self.large_dt_warning = True
+            #print("Warning: negative thickness value possibility due to large dt!")
 
         # update mass balance
         self.at_node['thk'] = self.at_node['thk'] + dt * self.secperyr * self.at_node['mb']
@@ -221,6 +223,21 @@ class GlacierFlowline(object):
         self.at_node['thk'][np.where(self.at_node['thk'] <= 0)] = 1e-9 # avoid negative thk and avoid divding by zero
         
         self.at_node['surf'] = self.at_node['topg'] + self.at_node['thk']
+
+    def update_thk_numba(self, dt):
+        thk, deform_vel, sliding_vel, large_dt_warning = _update_thk_numba_impl(
+            self.at_node['surf'], self.at_node['thk'], self.at_node['mb'],
+            self.dx, dt, self.glen_n, self.ice_softness, self.rho_ice, self.g,
+            self.sliding_constant, self.weertman_m, self.deform_e, self.sliding_e,
+            self.secperyr)
+
+        self.at_link['deform_vel'] = deform_vel
+        self.at_link['sliding_vel'] = sliding_vel
+        self.at_node['thk'] = thk
+        self.at_node['surf'] = self.at_node['topg'] + self.at_node['thk']
+
+        if large_dt_warning:
+            self.large_dt_warning = True
         
     def comp_mass_balance(self):
         self.at_node['mb'] = self.mass_balance_beta * (self.at_node['surf'] - self.ela)
@@ -266,8 +283,12 @@ class GlacierFlowline(object):
 
         self.at_node['surf'] = self.at_node['topg'] + self.at_node['thk']
         
-    def run_one_step(self, dt, sliding='traditional', erosion=False):
-        self.update_thk(dt, sliding=sliding)
+    def run_one_step(self, dt, sliding='traditional', erosion=False, numba=True):
+        self.comp_mass_balance()
+        if numba:
+            self.update_thk_numba(dt)
+        else:
+            self.update_thk(dt, sliding=sliding)
         if erosion:
             self.update_topg(dt)
             
@@ -317,3 +338,56 @@ class GlacierFlowline(object):
         self.saved_results['time'].attrs['units'] = 'years'
         #self.saved_results['time'].attrs['calendar'] = '365_day'
         self.saved_results.to_netcdf(filename)
+
+def _speed_up(func):
+    """A conditional decorator that use numba to speed up the function"""
+    try:
+        import numba
+        return numba.njit(func, cache=True)
+    except ImportError:
+        return func
+
+@_speed_up
+def _update_thk_numba_impl(surf, thk, mb, dx, dt, glen_n, ice_softness, rho_ice, g,
+                      sliding_constant, weertman_m, deform_e, sliding_e, secperyr):
+    deform_vel = np.zeros(len(thk)-1)
+    surf_grad = (surf[1:] - surf[:-1]) / dx
+    thk_staggered = 0.5 * (thk[1:] + thk[:-1])
+    deform_vel = -2 / (glen_n + 2) * ice_softness * \
+        np.power((rho_ice * g), glen_n) * np.power(thk_staggered, glen_n+1) \
+        * np.power(np.abs(surf_grad), glen_n-1) * surf_grad
+    
+    deform_vel *= deform_e
+
+    # staggered
+    sliding_vel = np.zeros(len(thk)-1)
+    eff_pres = 0.8 * rho_ice * g * thk
+    
+    eff_pres_staggered = 0.5 * (eff_pres[1:] + eff_pres[:-1])
+    basal_shear_staggered = rho_ice * g * thk_staggered * surf_grad
+    
+    sliding_vel = -sliding_constant / eff_pres_staggered \
+        * np.power(np.abs(basal_shear_staggered), weertman_m-1) \
+        * basal_shear_staggered
+
+    sliding_vel *= sliding_e
+    
+    flux = (deform_vel + sliding_vel) * thk_staggered
+    flux_div = np.zeros(len(thk))
+    flux_div[1:-1] = (flux[1:] - flux[:-1]) / dx
+    #flux_div[self.n_ghost] = (flux[self.n_ghost] - self.flux_in) / self.dx  # left boundary
+
+    # update based on flux
+    thk = thk + dt * secperyr * (0 - flux_div)
+
+    large_dt_warning = False
+    if len(thk[thk < 0]) > 0:
+        large_dt_warning = True
+        #print("Warning: negative thickness value possibility due to large dt!")
+
+    # update mass balance
+    thk = thk + dt * secperyr * mb
+    
+    thk[thk <= 0] = 1e-9 # avoid negative thk and avoid divding by zero
+    
+    return thk, deform_vel, sliding_vel, large_dt_warning
