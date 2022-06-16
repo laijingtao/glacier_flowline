@@ -3,7 +3,7 @@ import xarray as xr
 import math
 
 class GlacierFlowline(object):
-    def __init__(self, nx, dx, dt, **kwargs):
+    def __init__(self, nx, dx, **kwargs):
         self.secperyr = 31556926
         self.rho_ice = 910.0
         self.g = 9.81
@@ -27,6 +27,8 @@ class GlacierFlowline(object):
         self.n_ghost = 2
         self.nx = nx
         self.dx = dx
+
+        self.CFL_limit = kwargs.get('CFL_limit', 0.1)
         
         try:
             self.flux_in = kwargs['flux_in']/self.secperyr
@@ -84,153 +86,16 @@ class GlacierFlowline(object):
         
         self.saved_results = None
         
-    def comp_effective_pressure(self):
-        self.at_node['eff_pres'] = 0.8 * self.rho_ice * self.g * self.at_node['thk']
-        
-    def comp_deformation_velocity(self):
-        # staggered
-        self.at_link['deform_vel'] = np.zeros(self.num_of_links)
-        surf_grad = (self.at_node['surf'][1:] - self.at_node['surf'][:-1]) / self.dx
-        thk_staggered = 0.5 * (self.at_node['thk'][1:] + self.at_node['thk'][:-1])
-        self.at_link['deform_vel'] = -2 / (self.glen_n + 2) * self.ice_softness * \
-            np.power((self.rho_ice * self.g), self.glen_n) * np.power(thk_staggered, self.glen_n+1) \
-            * np.power(np.abs(surf_grad), self.glen_n-1) * surf_grad
-        for i in range(self.n_ghost):
-            self.at_link['deform_vel'][i] = 0.0
-        
-        self.at_link['deform_vel'] *= self.deform_e
     
-    def comp_sliding_velocity(self):
-        # staggered
-        self.at_link['sliding_vel'] = np.zeros(self.num_of_links)
-        self.comp_effective_pressure()
-        eff_pres_staggered = 0.5 * (self.at_node['eff_pres'][1:] + self.at_node['eff_pres'][:-1])
+    def update_thk(self, dt):
+        self.comp_mass_balance()
 
-        surf_grad = (self.at_node['surf'][1:] - self.at_node['surf'][:-1]) / self.dx
-        thk_staggered = 0.5 * (self.at_node['thk'][1:] + self.at_node['thk'][:-1])
-        basal_shear_staggered = self.rho_ice * self.g * thk_staggered * surf_grad
-        
-        self.at_link['sliding_vel'] = -self.sliding_constant / eff_pres_staggered \
-            * np.power(np.abs(basal_shear_staggered), self.weertman_m-1) \
-            * basal_shear_staggered
-        for i in range(self.n_ghost):
-            self.at_link['sliding_vel'][i] = 0.0
-        
-        self.at_link['sliding_vel'] *= self.sliding_e
-            
-    def ssa_one_step(self, N, gamma, W, alpha, beta, u_left):
-        # see https://github.com/bueler/mccarthy/blob/master/mfiles/flowline.m
-        rhs = self.dx**2 * beta
-        rhs[0] = u_left
-        #rhs[-1] = rhs[-1] - 2 * gamma * self.dx * W[-1]
-        rhs[-1] = 0.0
-        
-        A = np.zeros((N, N))
-        A[0, 0] = 1.0
-        for i in range(1, N-1):
-            A[i, i-1] = W[i-1]
-            A[i, i] = -(W[i-1] + W[i] + alpha[i] * self.dx**2)
-            A[i, i+1] = W[i]
-        #A[N-1, N-2] = W[N-2] + W[N-1]
-        #A[N-1, N-1] = -(W[N-2] + W[N-1] + alpha[N-1] * self.dx**2)
-        A[N-1, N-1] = 1.0
-
-        u = np.linalg.solve(A, rhs)
-        
-        #import pdb;pdb.set_trace()
-        return u
-        
-    def comp_sliding_velocity_ssa(self):
-        # see https://github.com/bueler/mccarthy/blob/master/mfiles/ssaflowline.m
-        
-        is_glacier = np.intersect1d(self.core_nodes, np.where(self.at_node['thk'] > 1e-3)[0])
-        N = len(is_glacier)
-        if N < 3:
-            return
-        
-        h = self.at_node['surf'][is_glacier]
-        hx = np.zeros(N)
-        hx[1:-1] = (h[2:] - h[:-2]) / (2*self.dx)
-        hx[0] = (h[1] - h[0]) / self.dx
-        hx[-1] = (h[-1] - h[-2]) / self.dx
-        
-        H = self.at_node['thk'][is_glacier]
-        beta = self.rho_ice * self.g * H * hx
-        gamma = (0.25 * self.ice_softness**(1.0/self.glen_n) * (1.0 - self.rho_ice/1000.) \
-                 * self.rho_ice * self.g * H[-1]) ** self.glen_n
-
-        self.comp_sliding_velocity()
-        initial_u = np.zeros(self.num_of_nodes)
-        initial_u[1:-1] = 0.5 * (self.at_link['sliding_vel'][1:] + self.at_link['sliding_vel'][:-1])
-        u = initial_u[is_glacier]
-        u_left = 0.0
-
-        Hstag = 0.5 * (H[1:] + H[:-1])
-        tol = 1.0 / self.secperyr
-        max_step = 10000
-        eps_reg = (1.0 / self.secperyr) / (self.nx * self.dx)
-        maxdiff = 1e5
-        W = np.zeros(N)
-        count = 0
-        while maxdiff > tol and count < max_step:
-            #import pdb;pdb.set_trace()
-            sqr_u_reg = np.power(u, 2) + eps_reg ** 2
-            alpha = np.power(self.at_node['eff_pres'][is_glacier]/self.sliding_constant, 1.0/self.weertman_m) \
-                * np.power(sqr_u_reg, (1.0/self.weertman_m - 1) / 2.0)
-            uxstag = (u[1:] - u[:-1]) / self.dx
-            sqr_ux_reg = np.power(uxstag, 2) + eps_reg ** 2 # regularize to avoid division by zero
-            W[:-1] = 2 * self.ice_softness**(-1.0/self.glen_n) * Hstag \
-                * np.power(sqr_ux_reg, (1.0/self.glen_n - 1) / 2.0)
-            W[-1] = W[-2]
-            unew = self.ssa_one_step(N, gamma, W, alpha, beta, u_left)
-            maxdiff = np.nanmax(np.abs(unew - u))
-            u = unew
-            count += 1
-        
-        if count >= max_step:
-            print("Warning: SSA iteration failed to converge")
-        sliding_vel = np.zeros(self.num_of_nodes)
-        sliding_vel[is_glacier] = u
-        self.at_link['sliding_vel'] = 0.5 * (sliding_vel[1:] + sliding_vel[:-1])
-        for i in range(self.n_ghost):
-            self.at_link['sliding_vel'][i] = 0.0
-        
-        self.at_link['sliding_vel'] *= self.sliding_e
-    
-    def update_thk(self, dt, sliding='traditional'):
-        self.comp_deformation_velocity()
-        if sliding == 'traditional':
-            self.comp_sliding_velocity()
-        elif sliding == 'ssa':
-            self.comp_sliding_velocity_ssa()
-        
-        thk_staggered = 0.5 * (self.at_node['thk'][1:] + self.at_node['thk'][:-1])
-        flux = (self.at_link['deform_vel'] + self.at_link['sliding_vel']) * thk_staggered
-        flux_div = np.zeros(self.nx+2*self.n_ghost)
-        flux_div[1:-1] = (flux[1:] - flux[:-1]) / self.dx
-        flux_div[self.n_ghost] = (flux[self.n_ghost] - self.flux_in) / self.dx  # left boundary
-
-        # update based on flux
-        self.at_node['thk'] = self.at_node['thk'] + dt * self.secperyr * (0 - flux_div)
-
-        if len(self.at_node['thk'][self.at_node['thk'] < 0]) > 0:
-            self.large_dt_warning = True
-            #print("Warning: negative thickness value possibility due to large dt!")
-
-        # update mass balance
-        self.at_node['thk'] = self.at_node['thk'] + dt * self.secperyr * self.at_node['mb']
-        
-        self.at_node['thk'][np.where(self.at_node['thk'] <= 0)] = 1e-9 # avoid negative thk and avoid divding by zero
-        
-        self.at_node['surf'] = self.at_node['topg'] + self.at_node['thk']
-
-    def update_thk_numba(self, dt):
         thk, deform_vel, sliding_vel, large_dt_warning = _update_thk_numba_impl(
-            self.at_node['surf'], self.at_node['thk'], self.at_node['mb'],
-            self.dx, dt, self.glen_n, self.ice_softness, self.rho_ice, self.g,
+            self.at_node['topg'], self.at_node['thk'], self.at_node['mb'],
+            self.dx, dt, self.CFL_limit, self.glen_n, self.ice_softness, self.rho_ice, self.g,
             self.sliding_constant, self.weertman_m, self.deform_e, self.sliding_e,
             self.secperyr)
-
+    
         self.at_link['deform_vel'] = deform_vel
         self.at_link['sliding_vel'] = sliding_vel
         self.at_node['thk'] = thk
@@ -283,12 +148,8 @@ class GlacierFlowline(object):
 
         self.at_node['surf'] = self.at_node['topg'] + self.at_node['thk']
         
-    def run_one_step(self, dt, sliding='traditional', erosion=False, numba=True):
-        self.comp_mass_balance()
-        if numba:
-            self.update_thk_numba(dt)
-        else:
-            self.update_thk(dt, sliding=sliding)
+    def run_one_step(self, dt, erosion=False):
+        self.update_thk(dt)
         if erosion:
             self.update_topg(dt)
             
@@ -348,9 +209,50 @@ def _speed_up(func):
         return func
 
 @_speed_up
-def _update_thk_numba_impl(surf, thk, mb, dx, dt, glen_n, ice_softness, rho_ice, g,
+def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softness, rho_ice, g,
                       sliding_constant, weertman_m, deform_e, sliding_e, secperyr):
+    large_dt_warning = False
+
+    dt = dt*secperyr
+
+    curr_t = 0
+    while curr_t < dt:
+        deform_vel, sliding_vel = _update_vel_numba_impl(
+            topg, thk, dx, glen_n, ice_softness, rho_ice, g,
+            sliding_constant, weertman_m, deform_e, sliding_e)
+        sub_dt = cfl_limit*dx/np.max(deform_vel+sliding_vel) # CFL condition
+        #print(sub_dt/secperyr)
+        if sub_dt > dt - curr_t:
+            sub_dt = dt - curr_t
+        
+        thk_staggered = 0.5 * (thk[1:] + thk[:-1])
+        flux = (deform_vel + sliding_vel) * thk_staggered
+        flux_div = np.zeros(len(thk))
+        flux_div[1:-1] = (flux[1:] - flux[:-1]) / dx
+        #flux_div[self.n_ghost] = (flux[self.n_ghost] - self.flux_in) / self.dx  # left boundary
+
+        # update based on flux
+        thk = thk + sub_dt * (0 - flux_div)
+    
+        if len(thk[thk < 0]) > 0:
+            large_dt_warning = True
+            #print("Warning: negative thickness value possibility due to large dt!")
+
+        # update mass balance
+        thk = thk + sub_dt * mb
+        
+        thk[thk <= 0] = 1e-15 # avoid negative thk and avoid divding by zero
+
+        curr_t += sub_dt
+    
+    return thk, deform_vel, sliding_vel, large_dt_warning
+
+@_speed_up
+def _update_vel_numba_impl(topg, thk, dx, glen_n, ice_softness, rho_ice, g,
+                      sliding_constant, weertman_m, deform_e, sliding_e):
+    # staggered
     deform_vel = np.zeros(len(thk)-1)
+    surf = topg + thk
     surf_grad = (surf[1:] - surf[:-1]) / dx
     thk_staggered = 0.5 * (thk[1:] + thk[:-1])
     deform_vel = -2 / (glen_n + 2) * ice_softness * \
@@ -371,23 +273,5 @@ def _update_thk_numba_impl(surf, thk, mb, dx, dt, glen_n, ice_softness, rho_ice,
         * basal_shear_staggered
 
     sliding_vel *= sliding_e
-    
-    flux = (deform_vel + sliding_vel) * thk_staggered
-    flux_div = np.zeros(len(thk))
-    flux_div[1:-1] = (flux[1:] - flux[:-1]) / dx
-    #flux_div[self.n_ghost] = (flux[self.n_ghost] - self.flux_in) / self.dx  # left boundary
 
-    # update based on flux
-    thk = thk + dt * secperyr * (0 - flux_div)
-
-    large_dt_warning = False
-    if len(thk[thk < 0]) > 0:
-        large_dt_warning = True
-        #print("Warning: negative thickness value possibility due to large dt!")
-
-    # update mass balance
-    thk = thk + dt * secperyr * mb
-    
-    thk[thk <= 0] = 1e-9 # avoid negative thk and avoid divding by zero
-    
-    return thk, deform_vel, sliding_vel, large_dt_warning
+    return deform_vel, sliding_vel
