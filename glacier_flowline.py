@@ -88,26 +88,31 @@ class GlacierFlowline(object):
         
     
     def update_thk(self, dt):
-        self.comp_mass_balance()
+        self.update_mass_balance()
 
         thk, deform_vel, sliding_vel, large_dt_warning = _update_thk_numba_impl(
             self.at_node['topg'], self.at_node['thk'], self.at_node['mb'],
             self.dx, dt, self.CFL_limit, self.glen_n, self.ice_softness, self.rho_ice, self.g,
             self.sliding_constant, self.weertman_m, self.deform_e, self.sliding_e,
-            self.secperyr)
+            self.mass_balance_beta, self.ela, self.snowfall_rate, self.secperyr)
     
         self.at_link['deform_vel'] = deform_vel
         self.at_link['sliding_vel'] = sliding_vel
         self.at_node['thk'] = thk
         self.at_node['surf'] = self.at_node['topg'] + self.at_node['thk']
+        self.update_mass_balance()
 
         if large_dt_warning:
             self.large_dt_warning = True
         
-    def comp_mass_balance(self):
-        self.at_node['mb'] = self.mass_balance_beta * (self.at_node['surf'] - self.ela)
-        self.at_node['mb'][np.where(self.at_node['mb'] > self.snowfall_rate)] = self.snowfall_rate
-        self.at_node['mb'] = self.at_node['mb'] / self.secperyr
+    def update_mass_balance(self):
+        mb = _update_mass_balance_numba_impl(
+            self.at_node['topg'], self.at_node['thk'], self.mass_balance_beta,
+            self.ela, self.snowfall_rate, self.secperyr)
+        self.at_node['mb'] = mb
+        #self.at_node['mb'] = self.mass_balance_beta * (self.at_node['surf'] - self.ela)
+        #self.at_node['mb'][np.where(self.at_node['mb'] > self.snowfall_rate)] = self.snowfall_rate
+        #self.at_node['mb'] = self.at_node['mb'] / self.secperyr
         #import pdb;pdb.set_trace()
         
     def update_topg(self, dt):
@@ -211,8 +216,10 @@ def _speed_up(func):
         return func
 
 @_speed_up
-def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softness, rho_ice, g,
-                      sliding_constant, weertman_m, deform_e, sliding_e, secperyr):
+def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softness,
+                           rho_ice, g, sliding_constant, weertman_m, deform_e,
+                           sliding_e, mass_balance_beta, ela, snowfall_rate,
+                           secperyr):
     large_dt_warning = False
 
     dt = dt*secperyr
@@ -241,6 +248,8 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
             #print("Warning: negative thickness value possibility due to large dt!")
 
         # update surface mass change
+        mb = _update_mass_balance_numba_impl(topg, thk, mass_balance_beta, ela,
+                                             snowfall_rate, secperyr)
         thk = thk + sub_dt * mb
         
         thk[thk <= 0] = 1e-9 # avoid negative thk and avoid divding by zero
@@ -251,7 +260,7 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
 
 @_speed_up
 def _update_vel_numba_impl(topg, thk, dx, glen_n, ice_softness, rho_ice, g,
-                      sliding_constant, weertman_m, deform_e, sliding_e):
+                           sliding_constant, weertman_m, deform_e, sliding_e):
     # staggered
     deform_vel = np.zeros(len(thk)-1)
     surf = topg + thk
@@ -277,3 +286,13 @@ def _update_vel_numba_impl(topg, thk, dx, glen_n, ice_softness, rho_ice, g,
     sliding_vel *= sliding_e
 
     return deform_vel, sliding_vel
+
+@_speed_up
+def _update_mass_balance_numba_impl(topg, thk, mass_balance_beta, ela,
+                                    snowfall_rate, secperyr):
+    surf = thk + topg
+    mb = mass_balance_beta * (surf - ela)
+    mb[mb > snowfall_rate] = snowfall_rate
+    mb = mb / secperyr
+
+    return mb
