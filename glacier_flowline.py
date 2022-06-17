@@ -17,7 +17,7 @@ class GlacierFlowline(object):
         self.erosion_k = 5e-4
         self.erosion_l = 1
         
-        self.slope_threshold = 30
+        self.slope_threshold = kwargs.get('slope_threshold', 30)
         
         self.uplift_rate = kwargs.get('uplift_rate', 0.)
         
@@ -167,15 +167,17 @@ class GlacierFlowline(object):
             self.model_state.coords['x'] = (('x'), x, {'units': 'm', 'long_name': 'upstream distance'})
             self.model_state['bedrock_elevation'] = (('x'), np.zeros(self.nx), {'units': 'm'})
             self.model_state['ice_thickness'] = (('x'), np.zeros(self.nx), {'units': 'm'})
+            self.model_state['surface_elevation'] = (('x'), np.zeros(self.nx), {'units': 'm'})
             self.model_state['sliding_velocity'] = (('x'), np.zeros(self.nx), {'units': 'm year-1'})
             self.model_state['deformation_velocity'] = (('x'), np.zeros(self.nx), {'units': 'm year-1'})
             self.model_state['mass_balance'] = (('x'), np.zeros(self.nx), {'units': 'm year-1'})
 
         self.model_state['bedrock_elevation'].data = self.at_node['topg'][self.core_nodes]
         self.model_state['ice_thickness'].data = self.at_node['thk'][self.core_nodes]
+        self.model_state['surface_elevation'].data = self.at_node['surf'][self.core_nodes]
         self.model_state['sliding_velocity'].data = self._unstagger(self.at_link['sliding_vel'])[self.core_nodes]*self.secperyr
         self.model_state['deformation_velocity'].data = self._unstagger(self.at_link['deform_vel'])[self.core_nodes]*self.secperyr
-        self.model_state['mass_balance'].data = self.at_node['mb'][self.core_nodes]
+        self.model_state['mass_balance'].data = self.at_node['mb'][self.core_nodes]*self.secperyr
     
     def save_model_state(self, t, var_list=None):
         self.update_model_state()
@@ -238,10 +240,10 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
             large_dt_warning = True
             #print("Warning: negative thickness value possibility due to large dt!")
 
-        # update mass balance
+        # update surface mass change
         thk = thk + sub_dt * mb
         
-        thk[thk <= 0] = 1e-15 # avoid negative thk and avoid divding by zero
+        thk[thk <= 0] = 1e-9 # avoid negative thk and avoid divding by zero
 
         curr_t += sub_dt
     
