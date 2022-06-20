@@ -229,35 +229,32 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
         deform_vel, sliding_vel = _update_vel_numba_impl(
             topg, thk, dx, glen_n, ice_softness, rho_ice, g,
             sliding_constant, weertman_m, deform_e, sliding_e)
+
+        sub_dt = cfl_limit*dx/np.max(np.abs(deform_vel+sliding_vel)) # CFL condition
+        if sub_dt > dt - curr_t:
+            sub_dt = dt - curr_t
         
         thk_staggered = 0.5 * (thk[1:] + thk[:-1])
         flux = (deform_vel + sliding_vel) * thk_staggered
+
+        # modify flux to prevent negative thk
+        # Section 5.10.1, Numerical Methods for Fluid Dynamics, 2nd, 2010
+        flux_out = np.zeros(len(thk))
+        flux_out[1:-1] = np.maximum(np.zeros(len(flux)-1), flux[1:]) - np.minimum(np.zeros(len(flux)-1), flux[:-1])
+        flux_out += 1e-6
+        flux_out_allowed = thk * dx / sub_dt
+        r_flux = np.minimum(np.ones(len(flux_out)), flux_out_allowed/flux_out)
+        corrector = np.zeros(len(flux))
+        for k in range(len(corrector)):
+            if flux[k] >= 0:
+                corrector[k] = r_flux[k]
+            else:
+                corrector[k] = r_flux[k+1]
+        flux = flux * corrector
+
         flux_div = np.zeros(len(thk))
         flux_div[1:-1] = (flux[1:] - flux[:-1]) / dx
         #flux_div[self.n_ghost] = (flux[self.n_ghost] - self.flux_in) / self.dx  # left boundary
-
-        sub_dt = cfl_limit*dx/np.max(np.abs(deform_vel+sliding_vel)) # CFL condition
-        #sub_dt_thk = np.min(thk[flux_div > 0]/flux_div[flux_div > 0]) # no negative thk
-        #if sub_dt > sub_dt_thk:
-        #    sub_dt = sub_dt_thk
-        #print(sub_dt/secperyr)
-        if sub_dt > dt - curr_t:
-            sub_dt = dt - curr_t
-
-        # modify flux_div to prevent negative thk
-        new_thk = thk + sub_dt * (0 - flux_div)
-        while len(new_thk[new_thk < -1e-5]) > 0:
-            k = np.where(new_thk < -1e-5)[0][0]
-            d_flux_div = flux_div[k] - thk[k] / sub_dt
-            flux_div[k] = thk[k] / sub_dt
-            if flux[k] > 0 and flux[k-1] < 0:
-                flux_div[k-1] += d_flux_div / 2
-                flux_div[k+1] += d_flux_div / 2
-            elif flux[k] > 0:
-                flux_div[k+1] += d_flux_div
-            elif flux[k] < 0:
-                flux_div[k-1] += d_flux_div
-            new_thk = thk + sub_dt * (0 - flux_div)
 
         # update based on flux
         thk = thk + sub_dt * (0 - flux_div)
