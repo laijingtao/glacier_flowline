@@ -237,17 +237,32 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
         #flux_div[self.n_ghost] = (flux[self.n_ghost] - self.flux_in) / self.dx  # left boundary
 
         sub_dt = cfl_limit*dx/np.max(np.abs(deform_vel+sliding_vel)) # CFL condition
-        sub_dt_thk = np.min(thk[flux_div > 0]/flux_div[flux_div > 0]) # no negative thk
-        if sub_dt > sub_dt_thk:
-            sub_dt = sub_dt_thk
+        #sub_dt_thk = np.min(thk[flux_div > 0]/flux_div[flux_div > 0]) # no negative thk
+        #if sub_dt > sub_dt_thk:
+        #    sub_dt = sub_dt_thk
         #print(sub_dt/secperyr)
         if sub_dt > dt - curr_t:
             sub_dt = dt - curr_t
 
+        # modify flux_div to prevent negative thk
+        new_thk = thk + sub_dt * (0 - flux_div)
+        while len(new_thk[new_thk < -1e-5]) > 0:
+            k = np.where(new_thk < -1e-5)[0][0]
+            d_flux_div = flux_div[k] - thk[k] / sub_dt
+            flux_div[k] = thk[k] / sub_dt
+            if flux[k] > 0 and flux[k-1] < 0:
+                flux_div[k-1] += d_flux_div / 2
+                flux_div[k+1] += d_flux_div / 2
+            elif flux[k] > 0:
+                flux_div[k+1] += d_flux_div
+            elif flux[k] < 0:
+                flux_div[k-1] += d_flux_div
+            new_thk = thk + sub_dt * (0 - flux_div)
+
         # update based on flux
         thk = thk + sub_dt * (0 - flux_div)
     
-        if len(thk[thk < 0]) > 0:
+        if len(thk[thk < -1e-5]) > 0:
             large_dt_warning = True
             #print("Warning: negative thickness value possibility due to large dt!")
 
