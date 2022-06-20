@@ -229,16 +229,20 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
         deform_vel, sliding_vel = _update_vel_numba_impl(
             topg, thk, dx, glen_n, ice_softness, rho_ice, g,
             sliding_constant, weertman_m, deform_e, sliding_e)
-        sub_dt = cfl_limit*dx/np.max(deform_vel+sliding_vel) # CFL condition
-        #print(sub_dt/secperyr)
-        if sub_dt > dt - curr_t:
-            sub_dt = dt - curr_t
         
         thk_staggered = 0.5 * (thk[1:] + thk[:-1])
         flux = (deform_vel + sliding_vel) * thk_staggered
         flux_div = np.zeros(len(thk))
         flux_div[1:-1] = (flux[1:] - flux[:-1]) / dx
         #flux_div[self.n_ghost] = (flux[self.n_ghost] - self.flux_in) / self.dx  # left boundary
+
+        sub_dt = cfl_limit*dx/np.max(np.abs(deform_vel+sliding_vel)) # CFL condition
+        sub_dt_thk = np.min(thk[flux_div > 0]/flux_div[flux_div > 0]) # no negative thk
+        if sub_dt > sub_dt_thk:
+            sub_dt = sub_dt_thk
+        #print(sub_dt/secperyr)
+        if sub_dt > dt - curr_t:
+            sub_dt = dt - curr_t
 
         # update based on flux
         thk = thk + sub_dt * (0 - flux_div)
