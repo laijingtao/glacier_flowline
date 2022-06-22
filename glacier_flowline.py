@@ -215,7 +215,7 @@ def _speed_up(func):
     except ImportError:
         return func
 
-@_speed_up
+#@_speed_up
 def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softness,
                            rho_ice, g, sliding_constant, weertman_m, deform_e,
                            sliding_e, mass_balance_beta, ela, snowfall_rate,
@@ -229,19 +229,39 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
         deform_vel, sliding_vel = _update_vel_numba_impl(
             topg, thk, dx, glen_n, ice_softness, rho_ice, g,
             sliding_constant, weertman_m, deform_e, sliding_e)
+        
+        vel = sliding_vel + deform_vel
 
-        sub_dt = cfl_limit*dx/np.max(np.abs(deform_vel+sliding_vel)) # CFL condition
+        sub_dt = cfl_limit*dx/np.max(np.abs(vel)) # CFL condition
         if sub_dt > dt - curr_t:
             sub_dt = dt - curr_t
         
-        thk_staggered = 0.5 * (thk[1:] + thk[:-1])
-        flux = (deform_vel + sliding_vel) * thk_staggered
+        # flux-limiter method
+        surf = thk + topg
+        slope_up = surf[1:-1] - surf[:-2]
+        slope_down = surf[2:] - surf[1:-1]
+        slope_down[slope_down < 1e-6] = 1e-6
+        r_slope = np.zeros(len(surf))
+        r_slope[1:-1] = slope_up/slope_down
+        limiter = np.minimum(2*r_slope, (1+r_slope)/2)
+        limiter = np.minimum(limiter, np.zeros(len(limiter))+2)
+        limiter = np.maximum(np.zeros(len(limiter)), limiter) # monotonized centered limiter
 
+        # upwind scheme
+        flux_l = 0.5 * vel * (thk[1:] + thk[:-1]) - 0.5 * np.abs(vel) * (thk[1:] - thk[:-1])
+        # central scheme
+        #flux_l = 0.5 * vel * (thk[1:] + thk[:-1])
+        # Lax-Wendroff scheme
+        flux_h = 0.5 * vel * (thk[1:] + thk[:-1]) - 0.5 * np.power(vel, 2) * sub_dt/dx * (thk[1:] - thk[:-1])
+        flux = flux_l + limiter[:-1]*(flux_h - flux_l)
+
+
+        '''
         # modify flux to prevent negative thk
         # Section 5.10.1, Numerical Methods for Fluid Dynamics, 2nd, 2010
         flux_out = np.zeros(len(thk))
         flux_out[1:-1] = np.maximum(np.zeros(len(flux)-1), flux[1:]) - np.minimum(np.zeros(len(flux)-1), flux[:-1])
-        flux_out += 1e-6
+        flux_out += 1e-9
         flux_out_allowed = thk * dx / sub_dt
         r_flux = np.minimum(np.ones(len(flux_out)), flux_out_allowed/flux_out)
         corrector = np.zeros(len(flux))
@@ -251,6 +271,7 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
             else:
                 corrector[k] = r_flux[k+1]
         flux = flux * corrector
+        '''
 
         flux_div = np.zeros(len(thk))
         flux_div[1:-1] = (flux[1:] - flux[:-1]) / dx
