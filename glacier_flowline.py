@@ -215,7 +215,7 @@ def _speed_up(func):
     except ImportError:
         return func
 
-#@_speed_up
+@_speed_up
 def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softness,
                            rho_ice, g, sliding_constant, weertman_m, deform_e,
                            sliding_e, mass_balance_beta, ela, snowfall_rate,
@@ -236,6 +236,7 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
         if sub_dt > dt - curr_t:
             sub_dt = dt - curr_t
         
+        '''
         # flux-limiter method
         surf = thk + topg
         slope_up = surf[1:-1] - surf[:-2]
@@ -246,17 +247,17 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
         limiter = np.minimum(2*r_slope, (1+r_slope)/2)
         limiter = np.minimum(limiter, np.zeros(len(limiter))+2)
         limiter = np.maximum(np.zeros(len(limiter)), limiter) # monotonized centered limiter
-
-        # upwind scheme
-        flux_l = 0.5 * vel * (thk[1:] + thk[:-1]) - 0.5 * np.abs(vel) * (thk[1:] - thk[:-1])
-        # central scheme
-        #flux_l = 0.5 * vel * (thk[1:] + thk[:-1])
-        # Lax-Wendroff scheme
-        flux_h = 0.5 * vel * (thk[1:] + thk[:-1]) - 0.5 * np.power(vel, 2) * sub_dt/dx * (thk[1:] - thk[:-1])
-        flux = flux_l + limiter[:-1]*(flux_h - flux_l)
-
-
         '''
+        # upwind scheme
+        #flux = 0.5 * vel * (thk[1:] + thk[:-1]) - 0.5 * np.abs(vel) * (thk[1:] - thk[:-1])
+        # central scheme
+        flux = 0.5 * vel * (thk[1:] + thk[:-1])
+
+        # Lax-Wendroff scheme
+        #flux_h = 0.5 * vel * (thk[1:] + thk[:-1]) - 0.5 * np.power(vel, 2) * sub_dt/dx * (thk[1:] - thk[:-1])
+        #flux = flux_l + limiter[:-1]*(flux_h - flux_l)
+
+        
         # modify flux to prevent negative thk
         # Section 5.10.1, Numerical Methods for Fluid Dynamics, 2nd, 2010
         flux_out = np.zeros(len(thk))
@@ -271,12 +272,12 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
             else:
                 corrector[k] = r_flux[k+1]
         flux = flux * corrector
-        '''
+        
 
         flux_div = np.zeros(len(thk))
         flux_div[1:-1] = (flux[1:] - flux[:-1]) / dx
         #flux_div[self.n_ghost] = (flux[self.n_ghost] - self.flux_in) / self.dx  # left boundary
-
+        
         # update based on flux
         thk = thk + sub_dt * (0 - flux_div)
     
