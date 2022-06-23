@@ -168,8 +168,8 @@ class GlacierFlowline(object):
         if self.model_state is None:
             # Initialize model state
             self.model_state = xr.Dataset()
-            x = self.nx*self.dx - (np.arange(self.nx)*self.dx + self.dx/2)
-            self.model_state.coords['x'] = (('x'), x, {'units': 'm', 'long_name': 'upstream distance'})
+            x = np.arange(self.nx)*self.dx + self.dx/2
+            self.model_state.coords['x'] = (('x'), x, {'units': 'm', 'long_name': 'distance'})
             self.model_state['bedrock_elevation'] = (('x'), np.zeros(self.nx), {'units': 'm'})
             self.model_state['ice_thickness'] = (('x'), np.zeros(self.nx), {'units': 'm'})
             self.model_state['surface_elevation'] = (('x'), np.zeros(self.nx), {'units': 'm'})
@@ -232,7 +232,7 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
         
         vel = sliding_vel + deform_vel
 
-        sub_dt = cfl_limit*dx/np.max(np.abs(vel)) # CFL condition
+        sub_dt = cfl_limit*dx/np.nanmax(np.abs(vel)) # CFL condition
         if sub_dt > dt - curr_t:
             sub_dt = dt - curr_t
         
@@ -249,9 +249,9 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
         limiter = np.maximum(np.zeros(len(limiter)), limiter) # monotonized centered limiter
         '''
         # upwind scheme
-        #flux = 0.5 * vel * (thk[1:] + thk[:-1]) - 0.5 * np.abs(vel) * (thk[1:] - thk[:-1])
+        flux = 0.5 * vel * (thk[1:] + thk[:-1]) - 0.5 * np.abs(vel) * (thk[1:] - thk[:-1])
         # central scheme
-        flux = 0.5 * vel * (thk[1:] + thk[:-1])
+        #flux = 0.5 * vel * (thk[1:] + thk[:-1])
 
         # Lax-Wendroff scheme
         #flux_h = 0.5 * vel * (thk[1:] + thk[:-1]) - 0.5 * np.power(vel, 2) * sub_dt/dx * (thk[1:] - thk[:-1])
@@ -299,11 +299,22 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
 @_speed_up
 def _update_vel_numba_impl(topg, thk, dx, glen_n, ice_softness, rho_ice, g,
                            sliding_constant, weertman_m, deform_e, sliding_e):
-    # staggered
-    deform_vel = np.zeros(len(thk)-1)
     surf = topg + thk
     surf_grad = (surf[1:] - surf[:-1]) / dx
-    thk_staggered = 0.5 * (thk[1:] + thk[:-1])
+    
+    # how to choose thk_staggered is important
+    # 0.5 * (thk[1:] + thk[:-1]) will be the classic Mahaffy method,
+    # but this can lead to mass conservation issue (see doi:10.5194/tc-7-229-2013)
+    # center scheme
+    #thk_staggered = 0.5 * (thk[1:] + thk[:-1])
+    # upwind scheme
+    dir = np.sign(surf_grad)
+    dir[dir == 0] = 1
+    thk_staggered = 0.5 * np.abs(dir) * (thk[1:] + thk[:-1]) \
+        + 0.5 * dir * (thk[1:] - thk[:-1])
+
+    # staggered
+    deform_vel = np.zeros(len(thk)-1)
     deform_vel = -2 / (glen_n + 2) * ice_softness * \
         np.power((rho_ice * g), glen_n) * np.power(thk_staggered, glen_n+1) \
         * np.power(np.abs(surf_grad), glen_n-1) * surf_grad
@@ -312,11 +323,8 @@ def _update_vel_numba_impl(topg, thk, dx, glen_n, ice_softness, rho_ice, g,
 
     # staggered
     sliding_vel = np.zeros(len(thk)-1)
-    eff_pres = 0.8 * rho_ice * g * thk
-    
-    eff_pres_staggered = 0.5 * (eff_pres[1:] + eff_pres[:-1])
+    eff_pres_staggered = 0.8 * rho_ice * g * thk_staggered
     basal_shear_staggered = rho_ice * g * thk_staggered * surf_grad
-    
     sliding_vel = -sliding_constant / eff_pres_staggered \
         * np.power(np.abs(basal_shear_staggered), weertman_m-1) \
         * basal_shear_staggered
