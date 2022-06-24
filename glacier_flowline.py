@@ -79,6 +79,8 @@ class GlacierFlowline(object):
             
         self.at_node['eff_pres'] = np.zeros(self.num_of_nodes)
 
+        self.at_node['glacial_erosion_rate'] = np.zeros(self.num_of_nodes)
+
         self.large_dt_warning = False
         
         self.model_state = None
@@ -92,15 +94,14 @@ class GlacierFlowline(object):
 
         thk, deform_vel, sliding_vel, large_dt_warning = _update_thk_numba_impl(
             self.at_node['topg'], self.at_node['thk'], self.at_node['mb'],
-            self.dx, dt, self.CFL_limit, self.glen_n, self.ice_softness, self.rho_ice, self.g,
-            self.sliding_constant, self.weertman_m, self.deform_e, self.sliding_e,
-            self.mass_balance_beta, self.ela, self.snowfall_rate, self.secperyr)
+            self.dx, dt, self.CFL_limit, self.glen_n, self.ice_softness,
+            self.rho_ice, self.g, self.sliding_constant, self.weertman_m,
+            self.deform_e, self.sliding_e, self.secperyr)
     
         self.at_link['deform_vel'] = deform_vel
         self.at_link['sliding_vel'] = sliding_vel
         self.at_node['thk'] = thk
         self.at_node['surf'] = self.at_node['topg'] + self.at_node['thk']
-        self.update_mass_balance()
 
         if large_dt_warning:
             self.large_dt_warning = True
@@ -118,8 +119,10 @@ class GlacierFlowline(object):
     def update_topg(self, dt):
         #import pdb;pdb.set_trace()
         sliding_vel_not_stagged = 0.5 * (self.at_link['sliding_vel'][1:] + self.at_link['sliding_vel'][:-1])
-        
-        self.at_node['topg'][1:-1] -= dt * np.power(np.abs(sliding_vel_not_stagged) * self.secperyr, self.erosion_l) * self.erosion_k
+        glacial_erosion_rate = np.power(np.abs(sliding_vel_not_stagged) * self.secperyr, self.erosion_l) * self.erosion_k
+        self.at_node['glacial_erosion_rate'] = glacial_erosion_rate
+
+        self.at_node['topg'][1:-1] -= dt * glacial_erosion_rate
         self.at_node['topg'][self.at_node['thk'] > 1e-3] += dt * self.uplift_rate # only change elevation under ice
         self.at_node['surf'] = self.at_node['topg'] + self.at_node['thk']
         
@@ -176,6 +179,7 @@ class GlacierFlowline(object):
             self.model_state['sliding_velocity'] = (('x'), np.zeros(self.nx), {'units': 'm year-1'})
             self.model_state['deformation_velocity'] = (('x'), np.zeros(self.nx), {'units': 'm year-1'})
             self.model_state['mass_balance'] = (('x'), np.zeros(self.nx), {'units': 'm year-1'})
+            self.model_state['glacial_erosion_rate'] = (('x'), np.zeros(self.nx), {'units': 'm year-1'})
 
         self.model_state['bedrock_elevation'].data = self.at_node['topg'][self.core_nodes]
         self.model_state['ice_thickness'].data = self.at_node['thk'][self.core_nodes]
@@ -183,6 +187,7 @@ class GlacierFlowline(object):
         self.model_state['sliding_velocity'].data = self._unstagger(self.at_link['sliding_vel'])[self.core_nodes]*self.secperyr
         self.model_state['deformation_velocity'].data = self._unstagger(self.at_link['deform_vel'])[self.core_nodes]*self.secperyr
         self.model_state['mass_balance'].data = self.at_node['mb'][self.core_nodes]*self.secperyr
+        self.model_state['glacial_erosion_rate'].data = self.at_node['glacial_erosion_rate'][self.core_nodes]
     
     def save_model_state(self, t, var_list=None):
         self.update_model_state()
@@ -218,8 +223,7 @@ def _speed_up(func):
 @_speed_up
 def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softness,
                            rho_ice, g, sliding_constant, weertman_m, deform_e,
-                           sliding_e, mass_balance_beta, ela, snowfall_rate,
-                           secperyr):
+                           sliding_e, secperyr):
     large_dt_warning = False
 
     dt = dt*secperyr
@@ -286,8 +290,6 @@ def _update_thk_numba_impl(topg, thk, mb, dx, dt, cfl_limit, glen_n, ice_softnes
             #print("Warning: negative thickness value possibility due to large dt!")
 
         # update surface mass change
-        mb = _update_mass_balance_numba_impl(topg, thk, mass_balance_beta, ela,
-                                             snowfall_rate, secperyr)
         thk = thk + sub_dt * mb
         
         thk[thk <= 0] = 1e-9 # avoid negative thk and avoid divding by zero
