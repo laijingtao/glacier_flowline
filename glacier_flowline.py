@@ -8,13 +8,13 @@ class GlacierFlowline(object):
         self.rho_ice = 910.0
         self.g = 9.81
         self.glen_n = 3.
-        self.ice_softness = 5e-17/self.secperyr # 1e-16 Bueler notes 2018
-        self.sliding_constant = 1e-15 # 7e-16, 5e-15 Herman 2011 epsl hydro paper
+        self.ice_softness = 1e-17/self.secperyr # 1e-16 Bueler notes 2018, ~1e-17 in Cuffey and Paterson 2010.
+        self.sliding_constant = 5e-15 # 7e-16, 5e-15 Herman 2011 epsl hydro paper
         #self.sliding_constant = 3e-5 # m = 1
         #self.sliding_constant = 2e-53 # m = 10
         self.weertman_m = 3.
         
-        self.erosion_k = 5e-4
+        self.erosion_k = 1e-4 # 1e-4 in Humphrey and Raymond 1994
         self.erosion_l = 1
         
         self.slope_threshold = kwargs.get('slope_threshold', 30)
