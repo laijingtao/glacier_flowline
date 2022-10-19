@@ -14,8 +14,8 @@ class GlacierFlowline(object):
         #self.sliding_constant = 2e-53 # m = 10
         self.weertman_m = 3.
         
-        self.erosion_k = 1e-4 # 1e-4 in Humphrey and Raymond 1994
-        self.erosion_l = 1
+        self.erosion_k = kwargs.get('erosion_k', 1e-4) # 1e-4 in Humphrey and Raymond 1994
+        self.erosion_l = kwargs.get('erosion_l', 1)
         
         self.slope_threshold = kwargs.get('slope_threshold', 30)
         
